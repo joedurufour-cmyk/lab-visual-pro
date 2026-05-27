@@ -106,7 +106,8 @@ select{appearance:none;-webkit-appearance:none;background-image:url("data:image/
   <button class="nav-btn" data-tab="builder"><span class="icon">🏗️</span><span>Builder</span></button>
   <button class="nav-btn" data-tab="vars"><span class="icon">🔀</span><span>Vars</span></button>
   <button class="nav-btn" data-tab="comp"><span class="icon">⚖️</span><span>Comp</span></button>
-  <button class="nav-btn blocks" data-tab="blocks"><span class="icon">🧱</span><span>Blocks</span></button>
+  <button class="nav-btn" data-tab="blocks"><span class="icon">🧱</span><span>Blocks</span></button>
+  <button class="nav-btn" data-tab="settings"><span class="icon">⚙️</span><span>Config</span></button>
   <button class="nav-btn" data-tab="log"><span class="icon">📝</span><span>Log</span></button>
 </div>
 
@@ -316,6 +317,26 @@ select{appearance:none;-webkit-appearance:none;background-image:url("data:image/
 <div class="section" id="log">
 <span class="label">Experiment Log</span>
 <div id="logList"></div>
+</div>
+
+<!-- === SETTINGS === -->
+<div class="section" id="settings">
+<span class="label">Cloud Backend</span>
+<div class="toggle-row"><div class="toggle-label">Use Cloud Mode<small>Send requests to Render backend + Kimi API</small></div><input type="checkbox" id="cloudToggle" onchange="saveCloudConfig()"></div>
+<span class="label">Backend URL</span>
+<input type="text" id="backendUrl" placeholder="https://visual-lab-api.onrender.com" onchange="saveCloudConfig()">
+<span class="label">API Secret</span>
+<input type="text" id="apiSecret" placeholder="vl-pro-secret-key" onchange="saveCloudConfig()">
+<div class="tip-box" style="margin-top:20px">
+<k>How to use:</k><br>
+1. Deploy backend to Render<br>
+2. Copy URL + API secret from Render dashboard<br>
+3. Paste here and enable Cloud Mode<br>
+4. "Native" and "Enhance" will call the real LLM
+</div>
+<span class="label">Connection Test</span>
+<button class="btn btn-kimi" onclick="testConnection()" style="width:100%">Test Connection →</button>
+<div id="connResult" style="margin-top:12px"></div>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -825,38 +846,64 @@ function preset(name) {
 // ============================================================
 // NATIVE TRANSLATOR
 // ============================================================
-function nativeTranslate() {
+async function nativeTranslate() {
   var input = document.getElementById('nativeInput').value.trim();
   if (!input) { showToast('Write something'); return; }
+
+  // Cloud mode: use backend API
+  if (isCloudMode()) {
+    showToast('Kimi translating...');
+    try {
+      var data = await apiCall('/api/translate', {
+        text: input,
+        mode: 'native',
+        ar: '9:20',
+        chaos: 15,
+        stylize: 250
+      });
+      renderNativeResult(data.prompt, data.tokens, true);
+    } catch(e) {
+      showToast('Translation failed, using local mode');
+      var result = kimify(input);
+      renderNativeResult(result.prompt, result.tokens, result.physiqueFirst);
+    }
+    return;
+  }
+
+  // Local mode
   var result = kimify(input);
+  renderNativeResult(result.prompt, result.tokens, result.physiqueFirst);
+}
+
+function renderNativeResult(prompt, tokens, physiqueFirst) {
   var box = document.getElementById('nativeResult');
   box.innerHTML = '';
   var card = document.createElement('div');
   card.className = 'native-result';
   var tag = document.createElement('div');
   tag.className = 'tag';
-  tag.textContent = 'Kimi Native Output';
+  tag.textContent = isCloudMode() ? 'Kimi Cloud Output' : 'Kimi Native Output';
   var promptDiv = document.createElement('div');
   promptDiv.className = 'prompt-text';
-  promptDiv.textContent = result.prompt;
+  promptDiv.textContent = prompt;
   var metaDiv = document.createElement('div');
   metaDiv.className = 'meta';
   metaDiv.style.marginTop = '8px';
-  metaDiv.textContent = 'Tokens: ~' + result.tokens + ' | Physique priority: ' + (result.physiqueFirst ? 'YES' : 'NO');
+  metaDiv.textContent = 'Tokens: ~' + tokens + ' | Physique priority: ' + (physiqueFirst ? 'YES' : 'NO');
   var actions = document.createElement('div');
   actions.className = 'actions';
   var copyBtn = document.createElement('button');
   copyBtn.className = 'btn btn-kimi';
   copyBtn.textContent = 'Copy';
-  copyBtn.onclick = function() { copyText(result.prompt); };
+  copyBtn.onclick = function() { copyText(prompt); };
   var winBtn = document.createElement('button');
   winBtn.className = 'btn btn-win';
   winBtn.textContent = '✅';
-  winBtn.onclick = function() { logNative(result.prompt, 'win'); };
+  winBtn.onclick = function() { logNative(prompt, 'win'); };
   var failBtn = document.createElement('button');
   failBtn.className = 'btn btn-fail';
   failBtn.textContent = '❌';
-  failBtn.onclick = function() { logNative(result.prompt, 'fail'); };
+  failBtn.onclick = function() { logNative(prompt, 'fail'); };
   actions.appendChild(copyBtn);
   actions.appendChild(winBtn);
   actions.appendChild(failBtn);
@@ -1271,6 +1318,74 @@ function runCompare() {
 // ============================================================
 // CAV — Camera & Visual Recipe Engine v1.0
 // ============================================================
+var CLOUD_CONFIG_KEY = 'vlpro_cloud';
+
+function getCloudConfig() {
+  try { return JSON.parse(localStorage.getItem(CLOUD_CONFIG_KEY) || '{}'); } catch(e) { return {}; }
+}
+
+function saveCloudConfig() {
+  var cfg = {
+    enabled: document.getElementById('cloudToggle').checked,
+    url: document.getElementById('backendUrl').value.trim(),
+    secret: document.getElementById('apiSecret').value.trim()
+  };
+  localStorage.setItem(CLOUD_CONFIG_KEY, JSON.stringify(cfg));
+  showToast(cfg.enabled ? 'Cloud mode ON' : 'Cloud mode OFF');
+}
+
+function loadCloudConfig() {
+  var cfg = getCloudConfig();
+  document.getElementById('cloudToggle').checked = !!cfg.enabled;
+  document.getElementById('backendUrl').value = cfg.url || '';
+  document.getElementById('apiSecret').value = cfg.secret || '';
+}
+
+function isCloudMode() {
+  var cfg = getCloudConfig();
+  return !!(cfg.enabled && cfg.url && cfg.secret);
+}
+
+async function apiCall(endpoint, body) {
+  var cfg = getCloudConfig();
+  var url = cfg.url.replace(/\/+$/, '') + endpoint;
+  try {
+    var resp = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': cfg.secret
+      },
+      body: JSON.stringify(body)
+    });
+    if (!resp.ok) {
+      var err = await resp.text();
+      throw new Error('HTTP ' + resp.status + ': ' + err);
+    }
+    return await resp.json();
+  } catch(e) {
+    showToast('Cloud error: ' + e.message);
+    throw e;
+  }
+}
+
+async function testConnection() {
+  var cfg = getCloudConfig();
+  if (!cfg.url || !cfg.secret) { showToast('Fill URL and Secret first'); return; }
+  showToast('Testing...');
+  try {
+    var resp = await fetch(cfg.url.replace(/\/+$/, '') + '/health');
+    var data = await resp.json();
+    document.getElementById('connResult').innerHTML = '<div class="tip-box" style="border-color:var(--accent2)"><k>OK:</k> Backend ' + (data.kimi_configured ? 'ready + LLM connected' : 'ready but NO API key') + '</div>';
+  } catch(e) {
+    document.getElementById('connResult').innerHTML = '<div class="tip-box" style="border-color:var(--accent)"><k>FAIL:</k> ' + e.message + '</div>';
+  }
+}
+
+// Load config on startup
+loadCloudConfig();
+
+// CAV — Camera & Visual Recipe Engine v1.0
 var CAV_RECIPES = {
   version: "1.0.0",
   categories: [
